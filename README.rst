@@ -14,7 +14,7 @@ Synopsis
 
     joystickwake -h|--help|--version
 
-    joystickwake [--command cmd] [--cooldown seconds] [--loglevel level]
+    joystickwake [--command cmd] [--cooldown seconds] [--loglevel level] [--threshold value]
 
 
 Description
@@ -104,8 +104,9 @@ This example illustrates the configuration file format and settings::
     command = xdg-screensaver reset # This might work on some desktops
     cooldown = 30                   # Number of seconds between wakes
     loglevel = warning              # Also: debug, info, error, critical
+    threshold = 1000                # Joystick axis deadzone threshold
 
-Command line options ``--command``, ``--cooldown``, and ``--loglevel``
+Command line options ``--command``, ``--cooldown``, ``--loglevel``, and ``--threshold``
 will override their corresponding config file settings.
 
 
