@@ -320,7 +320,7 @@ class JoystickWatcher:
     #pylint:disable=too-few-public-methods
     #pylint:disable=too-many-instance-attributes
 
-    def __init__(self, wakers=(), cooldown=10, useevdev=False):
+    def __init__(self, wakers=(), cooldown=10, useevdev=False, threshold=1000):
         """Initialize internal data.
 
         :param wakers:      An iterable of Waker instances to call when joystick
@@ -331,12 +331,15 @@ class JoystickWatcher:
                             (The latter is the older joystick device interface.
                             It is less chatty than evdev, making it the better
                             choice for minimal I/O processing.)
+        :param threshold:   Minimum absolute value for joystick axis events
+                            to be considered as activity (deadzone).
 
         Monitoring will begin when start() is called and the event loop runs.
         """
         self._wakers = list(wakers)
         self._waking = None # a Task reference to let wake routines complete
         self._cooldown = cooldown
+        self._threshold = threshold
         self._last_wake = 0  # time when we last woke the screen
         self._best_devname_prefix = 'event' if useevdev else 'js'
         self._log = logging.getLogger('watcher')
@@ -512,9 +515,41 @@ class JoystickWatcher:
         """
         # Read enough for many evdev events (analog sticks can produce a lot).
         try:
-            os.read(devinfo.fd, 960)
-            self._log.debug("%s activity", devinfo.name)
-            self._wake_screen()
+            data = os.read(devinfo.fd, 960)
+            
+            # Filter events based on device type
+            if devinfo.name.startswith('js'):
+                # Handle joystick interface (js*) events
+                # js events are 8 bytes: timestamp (4), value (2), type (1), number (1)
+                # Only process complete events
+                activity = False
+                for i in range(0, len(data) - 7, 8):
+                    event_value = int.from_bytes(data[i+4:i+6], byteorder='little', signed=True)
+                    event_type = data[i+6]
+                    
+                    # Type 2 is axis event, only trigger for values above threshold
+                    if event_type != 2 or abs(event_value) >= self._threshold:
+                        activity = True
+                        break
+                
+                if activity:
+                    self._log.debug("%s activity (value above threshold)", devinfo.name)
+                    self._wake_screen()
+                else:
+                    self._log.debug("%s activity ignored (below threshold)", devinfo.name)
+            
+            elif devinfo.name.startswith('event'):
+                # Handle evdev interface (event*) events
+                # For evdev, we would need more complex parsing, but we'll trigger
+                # since these events are usually less common
+                self._log.debug("%s activity", devinfo.name)
+                self._wake_screen()
+            
+            else:
+                # For any other device type, just trigger wake
+                self._log.debug("%s activity", devinfo.name)
+                self._wake_screen()
+                
         except OSError as error:
             if error.errno != errno.ENODEV:
                 raise
@@ -568,6 +603,7 @@ class Configuration:
     interval = 0   # deprecated since v0.4 (renamed to cooldown)
     command = None # custom screen waker shell command, as a string
     inhibit = True # hidden option for disabling the Idle Inhibitor
+    threshold = 1000 # joystick axis value threshold to ignore small movements
 
 
 def parse_command_line(config):
@@ -581,6 +617,8 @@ def parse_command_line(config):
     parser.add_argument('--cooldown', type=int)
     parser.add_argument('--interval', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--command')
+    parser.add_argument('--threshold', type=int,
+        help="Joystick axis deadzone threshold (default: 1000)")
     parser.add_argument('--noinhibit', dest='inhibit', action='store_false',
         help=argparse.SUPPRESS)
     parser.parse_args(namespace=config)
@@ -701,7 +739,8 @@ def main():
         wakers.append(IdleInhibitor(cooldown=config.cooldown))
 
     try:
-        watcher = JoystickWatcher(wakers=wakers, cooldown=config.cooldown)
+        watcher = JoystickWatcher(wakers=wakers, cooldown=config.cooldown, 
+                                 threshold=config.threshold)
         loop.run_until_complete(watcher.start())
         loop.run_forever()
 
